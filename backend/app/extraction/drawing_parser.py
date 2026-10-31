@@ -68,6 +68,10 @@ def _normalized_field(
     if not known:
         return _unknown()
     if any(field.value != known[0].value for field in known[1:]):
+        if field_name in {"scale", "weight", "sheet_number"}:
+            if fields and fields[0].value is not None:
+                return fields[0].model_copy(deep=True)
+            return known[0].model_copy(deep=True)
         return _unknown()
     if len(known) != len(fields) and any(
         field.confidence < HIGH_CONFIDENCE_THRESHOLD for field in known

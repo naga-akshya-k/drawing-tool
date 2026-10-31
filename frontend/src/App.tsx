@@ -360,11 +360,15 @@ function UploadPage({
 
 function Overview({
   drawing,
+  currentPage,
   onSelect,
 }: {
   drawing: DrawingDocument;
+  currentPage?: number;
   onSelect: (selection: EvidenceSelection) => void;
 }) {
+  const currentPageTitleBlock = drawing.pages?.find((p) => p.page_number === currentPage)?.title_block;
+
   return (
     <div className="tab-content">
       <SectionHeader
@@ -374,10 +378,22 @@ function Overview({
       />
       {OVERVIEW_GROUPS.map((group) => (
         <section className="field-group" key={group.title}>
-          <h3>{group.title}</h3>
+          <div className="field-group__header" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "10px" }}>
+            <h3 style={{ margin: 0 }}>{group.title}</h3>
+            {group.title === "Drawing attributes" && currentPage && drawing.pages && drawing.pages.length > 1 && (
+              <span style={{ fontSize: "9px", fontFamily: 'SFMono-Regular, Consolas, monospace', color: "var(--accent-deep)", background: "#eff7dd", padding: "2px 7px", borderRadius: "4px", fontWeight: 700 }}>
+                Sheet {currentPage} of {drawing.pages.length}
+              </span>
+            )}
+          </div>
           <div className="field-grid">
             {group.fields.map(({ key, label }) => {
-              const field = drawing[key];
+              const pageField = currentPageTitleBlock && key in currentPageTitleBlock
+                ? (currentPageTitleBlock as unknown as Record<string, unknown>)[key]
+                : undefined;
+              const field = isExtractedField(pageField) && pageField.value !== null
+                ? pageField
+                : drawing[key];
               return isExtractedField(field) ? (
                 <FieldButton key={key} label={label} field={field} onSelect={onSelect} />
               ) : null;
@@ -1727,7 +1743,7 @@ function AnalysisPage({
   }
 
   const tabContent: Record<AnalysisTab, ReactNode> = {
-    overview: <Overview drawing={drawing} onSelect={selectEvidence} />,
+    overview: <Overview drawing={drawing} currentPage={page} onSelect={selectEvidence} />,
     revisions: <Revisions records={drawing.revision_records ?? []} onSelect={selectEvidence} />,
     notes: <Notes notes={drawing.notes ?? []} onSelect={selectEvidence} />,
     bom: <BomParts drawing={drawing} onSelect={selectEvidence} />,

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import {
   GlobalWorkerOptions,
   getDocument,
@@ -50,12 +50,25 @@ export default function PdfPreview({
 }: PdfPreviewProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const minimapCanvasRef = useRef<HTMLCanvasElement>(null);
+  const minimapWrapRef = useRef<HTMLDivElement>(null);
+
   const [document, setDocument] = useState<PDFDocumentProxy | null>(null);
   const [hostWidth, setHostWidth] = useState(720);
   const [renderSize, setRenderSize] = useState({ width: 0, height: 0 });
   const [zoom, setZoom] = useState(1);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  // Dynamic preview (minimap) state
+  const [showDynamicPreview, setShowDynamicPreview] = useState(true);
+  const [minimapSize, setMinimapSize] = useState({ width: 175, height: 120 });
+  const [viewportRatio, setViewportRatio] = useState({ x: 0, y: 0, w: 100, h: 100 });
+  const [isMinimapDragging, setIsMinimapDragging] = useState(false);
+
+  // Easy moving (click-and-drag panning) state
+  const [isPanning, setIsPanning] = useState(false);
+  const panStartRef = useRef<{ x: number; y: number; scrollLeft: number; scrollTop: number } | null>(null);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -88,6 +101,7 @@ export default function PdfPreview({
     };
   }, [file]);
 
+  // Main high-res canvas rendering
   useEffect(() => {
     if (!document || !canvasRef.current) return;
     let disposed = false;
@@ -130,7 +144,223 @@ export default function PdfPreview({
     };
   }, [currentPage, document, hostWidth, zoom]);
 
+  // Dynamic preview minimap rendering
+  useEffect(() => {
+    if (!document || !minimapCanvasRef.current) return;
+    let disposed = false;
+    let renderTask: RenderTask | null = null;
+    document
+      .getPage(currentPage)
+      .then((page) => {
+        if (disposed || !minimapCanvasRef.current) return;
+        const natural = page.getViewport({ scale: 1 });
+        const targetWidth = 175;
+        const thumbScale = targetWidth / natural.width;
+        const viewport = page.getViewport({ scale: thumbScale });
+        const canvas = minimapCanvasRef.current;
+        const context = canvas.getContext("2d");
+        if (!context) return;
+        canvas.width = Math.floor(viewport.width);
+        canvas.height = Math.floor(viewport.height);
+        canvas.style.width = `${viewport.width}px`;
+        canvas.style.height = `${viewport.height}px`;
+        setMinimapSize({ width: viewport.width, height: viewport.height });
+        renderTask = page.render({
+          canvas,
+          canvasContext: context,
+          viewport,
+        });
+        return renderTask.promise;
+      })
+      .catch(() => {});
+    return () => {
+      disposed = true;
+      renderTask?.cancel();
+    };
+  }, [currentPage, document]);
+
+  // Synchronize viewport indicator with scroll position and size
+  const updateViewportRatio = useCallback(() => {
+    const host = hostRef.current;
+    if (!host || !renderSize.width || !renderSize.height) return;
+    const w = Math.min(100, Math.max(4, (host.clientWidth / renderSize.width) * 100));
+    const h = Math.min(100, Math.max(4, (host.clientHeight / renderSize.height) * 100));
+    const x = Math.min(100 - w, Math.max(0, (host.scrollLeft / renderSize.width) * 100));
+    const y = Math.min(100 - h, Math.max(0, (host.scrollTop / renderSize.height) * 100));
+    setViewportRatio({ x, y, w, h });
+  }, [renderSize]);
+
+  useEffect(() => {
+    updateViewportRatio();
+  }, [updateViewportRatio, renderSize]);
+
   const pageMetadata = pages.find((page) => page.page_number === currentPage);
+
+  // Auto-center viewport when evidence is selected
+  useEffect(() => {
+    if (
+      !selection ||
+      selection.pageNumber !== currentPage ||
+      !hostRef.current ||
+      !pageMetadata?.width ||
+      !pageMetadata.height ||
+      !renderSize.width ||
+      !renderSize.height
+    )
+      return;
+
+    const [x0, y0, x1, y1] = selection.boundingBox;
+    const centerX = (((x0 + x1) / 2) / pageMetadata.width) * renderSize.width;
+    const centerY = (((y0 + y1) / 2) / pageMetadata.height) * renderSize.height;
+
+    hostRef.current.scrollTo({
+      left: Math.max(0, centerX - hostRef.current.clientWidth / 2),
+      top: Math.max(0, centerY - hostRef.current.clientHeight / 2),
+      behavior: "smooth",
+    });
+  }, [selection, currentPage, renderSize, pageMetadata]);
+
+  // Dynamic preview interaction: move main view from minimap
+  const moveMainFromMinimap = (clientX: number, clientY: number) => {
+    const wrap = minimapWrapRef.current;
+    const host = hostRef.current;
+    if (!wrap || !host || !renderSize.width || !renderSize.height) return;
+    const rect = wrap.getBoundingClientRect();
+    const ratioX = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+    const ratioY = Math.max(0, Math.min(1, (clientY - rect.top) / rect.height));
+
+    host.scrollLeft = ratioX * renderSize.width - host.clientWidth / 2;
+    host.scrollTop = ratioY * renderSize.height - host.clientHeight / 2;
+    updateViewportRatio();
+  };
+
+  const handleMinimapPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    setIsMinimapDragging(true);
+    try {
+      (e.target as HTMLElement).setPointerCapture(e.pointerId);
+    } catch {}
+    moveMainFromMinimap(e.clientX, e.clientY);
+  };
+
+  const handleMinimapPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!isMinimapDragging) return;
+    moveMainFromMinimap(e.clientX, e.clientY);
+  };
+
+  const handleMinimapPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    setIsMinimapDragging(false);
+    try {
+      (e.target as HTMLElement).releasePointerCapture(e.pointerId);
+    } catch {}
+  };
+
+  // Easy moving: click-and-drag panning on the main viewport
+  const handleViewportMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    const target = e.target as HTMLElement;
+    if (target.closest("button") || target.closest(".dynamic-preview-panel")) return;
+    setIsPanning(true);
+    panStartRef.current = {
+      x: e.clientX,
+      y: e.clientY,
+      scrollLeft: hostRef.current?.scrollLeft || 0,
+      scrollTop: hostRef.current?.scrollTop || 0,
+    };
+  };
+
+  const handleViewportMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!isPanning || !panStartRef.current || !hostRef.current) return;
+    const dx = e.clientX - panStartRef.current.x;
+    const dy = e.clientY - panStartRef.current.y;
+    hostRef.current.scrollLeft = panStartRef.current.scrollLeft - dx;
+    hostRef.current.scrollTop = panStartRef.current.scrollTop - dy;
+  };
+
+  const handleViewportMouseUp = () => {
+    setIsPanning(false);
+    panStartRef.current = null;
+  };
+
+  const zoomRef = useRef(zoom);
+  zoomRef.current = zoom;
+
+  // Active non-passive event listeners to ensure two-finger gestures zoom only the drawing
+  // and prevent browser whole-page zoom (trackpad pinch wheel + touch pinch).
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host) return;
+
+    const onWheelNative = (e: WheelEvent) => {
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        const factor = Math.exp(-e.deltaY * 0.005);
+        setZoom((z) => Math.min(3.0, Math.max(0.5, Number((z * factor).toFixed(2)))));
+      }
+    };
+
+    let initialPinchDistance = 0;
+    let pinchStartZoom = 1;
+    let singleTouchStart: { x: number; y: number; scrollLeft: number; scrollTop: number } | null = null;
+
+    const onTouchStart = (e: TouchEvent) => {
+      if (e.touches.length === 2) {
+        e.preventDefault();
+        const dx = e.touches[0].clientX - e.touches[1].clientX;
+        const dy = e.touches[0].clientY - e.touches[1].clientY;
+        initialPinchDistance = Math.hypot(dx, dy);
+        pinchStartZoom = zoomRef.current;
+        singleTouchStart = null;
+      } else if (e.touches.length === 1) {
+        singleTouchStart = {
+          x: e.touches[0].clientX,
+          y: e.touches[0].clientY,
+          scrollLeft: host.scrollLeft,
+          scrollTop: host.scrollTop,
+        };
+      }
+    };
+
+    const onTouchMove = (e: TouchEvent) => {
+      if (e.touches.length === 2 && initialPinchDistance > 0) {
+        e.preventDefault();
+        const dx = e.touches[0].clientX - e.touches[1].clientX;
+        const dy = e.touches[0].clientY - e.touches[1].clientY;
+        const currentDist = Math.hypot(dx, dy);
+        const scale = currentDist / initialPinchDistance;
+        setZoom(Math.min(3.0, Math.max(0.5, Number((pinchStartZoom * scale).toFixed(2)))));
+      } else if (e.touches.length === 1 && singleTouchStart) {
+        e.preventDefault();
+        const dx = e.touches[0].clientX - singleTouchStart.x;
+        const dy = e.touches[0].clientY - singleTouchStart.y;
+        host.scrollLeft = singleTouchStart.scrollLeft - dx;
+        host.scrollTop = singleTouchStart.scrollTop - dy;
+      }
+    };
+
+    const onTouchEnd = (e: TouchEvent) => {
+      if (e.touches.length < 2) {
+        initialPinchDistance = 0;
+      }
+      if (e.touches.length === 0) {
+        singleTouchStart = null;
+      }
+    };
+
+    host.addEventListener("wheel", onWheelNative, { passive: false });
+    host.addEventListener("touchstart", onTouchStart, { passive: false });
+    host.addEventListener("touchmove", onTouchMove, { passive: false });
+    host.addEventListener("touchend", onTouchEnd, { passive: false });
+    host.addEventListener("touchcancel", onTouchEnd, { passive: false });
+
+    return () => {
+      host.removeEventListener("wheel", onWheelNative);
+      host.removeEventListener("touchstart", onTouchStart);
+      host.removeEventListener("touchmove", onTouchMove);
+      host.removeEventListener("touchend", onTouchEnd);
+      host.removeEventListener("touchcancel", onTouchEnd);
+    };
+  }, []);
+
   const highlight =
     selection &&
     selection.pageNumber === currentPage &&
@@ -222,18 +452,37 @@ export default function PdfPreview({
         <div className="zoom-controls" aria-label="Zoom controls">
           <button
             type="button"
-            onClick={() => setZoom((value) => Math.max(0.6, value - 0.2))}
+            onClick={() => setZoom((value) => Math.max(0.5, Number((value - 0.2).toFixed(2))))}
             aria-label="Zoom out"
+            title="Zoom out"
           >
             −
           </button>
-          <span>{Math.round(zoom * 100)}%</span>
+          <span title="Current zoom">{Math.round(zoom * 100)}%</span>
           <button
             type="button"
-            onClick={() => setZoom((value) => Math.min(2.4, value + 0.2))}
+            onClick={() => setZoom((value) => Math.min(3.0, Number((value + 0.2).toFixed(2))))}
             aria-label="Zoom in"
+            title="Zoom in"
           >
             +
+          </button>
+          <button
+            type="button"
+            className="zoom-preset-btn"
+            onClick={() => setZoom(1.0)}
+            title="Reset to 100% Fit"
+          >
+            Fit
+          </button>
+          <button
+            type="button"
+            className={`minimap-toggle-btn ${showDynamicPreview ? "minimap-toggle-btn--active" : ""}`}
+            onClick={() => setShowDynamicPreview((prev) => !prev)}
+            title={showDynamicPreview ? "Hide Dynamic Preview" : "Show Dynamic Preview"}
+            aria-label="Toggle Dynamic Preview"
+          >
+            ⊞ Preview
           </button>
         </div>
       </div>
@@ -277,10 +526,18 @@ export default function PdfPreview({
           <button type="button" onClick={onClearSelection}>Clear</button>
         </div>
       ) : (
-        <div className="evidence-hint">Select an evidenced field to locate it on the drawing.</div>
+        <div className="evidence-hint">Select an evidenced field to locate it on the drawing. Drag to pan anywhere.</div>
       )}
 
-      <div className="preview__viewport" ref={hostRef}>
+      <div
+        className={`preview__viewport ${isPanning ? "is-panning" : "can-pan"}`}
+        ref={hostRef}
+        onScroll={updateViewportRatio}
+        onMouseDown={handleViewportMouseDown}
+        onMouseMove={handleViewportMouseMove}
+        onMouseUp={handleViewportMouseUp}
+        onMouseLeave={handleViewportMouseUp}
+      >
         {error && <div className="preview-state preview-state--error">{error}</div>}
         {loading && !error && <div className="preview-state"><span className="loader" />Rendering sheet</div>}
         <div
@@ -315,7 +572,7 @@ export default function PdfPreview({
               role="img"
               aria-label={`${region.object_type.replaceAll("_", " ")} visual evidence`}
             >
-              <span>{region.object_type.replaceAll("_", " ")} · {Math.round(region.confidence * 100)}%</span>
+              <span>{region.normalized_text ? `${region.normalized_text} · ` : ""}{region.object_type.replaceAll("_", " ")} · {Math.round(region.confidence * 100)}%</span>
             </div>
           ))}
           {highlight && (
@@ -324,7 +581,65 @@ export default function PdfPreview({
             </div>
           )}
         </div>
+
+        {/* Dynamic Preview Minimap Navigator */}
+        {showDynamicPreview && (
+          <div className="dynamic-preview-panel" aria-label="Dynamic Preview Navigator">
+            <div className="dynamic-preview-panel__header">
+              <span className="dynamic-preview-panel__title">
+                <span className="dynamic-preview-panel__dot" /> Dynamic Preview
+              </span>
+              <span className="dynamic-preview-panel__scale">{Math.round(zoom * 100)}%</span>
+              <button
+                type="button"
+                className="dynamic-preview-panel__close"
+                onClick={() => setShowDynamicPreview(false)}
+                title="Hide dynamic preview"
+                aria-label="Hide dynamic preview"
+              >
+                ✕
+              </button>
+            </div>
+            <div
+              className="dynamic-preview-panel__canvas-wrap"
+              ref={minimapWrapRef}
+              onPointerDown={handleMinimapPointerDown}
+              onPointerMove={handleMinimapPointerMove}
+              onPointerUp={handleMinimapPointerUp}
+              style={{ width: minimapSize.width, height: minimapSize.height }}
+              title="Click or drag to move visible region"
+            >
+              <canvas ref={minimapCanvasRef} />
+              {/* Evidence marker on dynamic preview */}
+              {highlight && (
+                <div
+                  className="dynamic-preview__marker"
+                  style={{
+                    left: highlight.left,
+                    top: highlight.top,
+                    width: highlight.width,
+                    height: highlight.height,
+                  }}
+                />
+              )}
+              {/* Live viewfinder rectangle */}
+              <div
+                className="dynamic-preview__viewfinder"
+                style={{
+                  left: `${viewportRatio.x}%`,
+                  top: `${viewportRatio.y}%`,
+                  width: `${viewportRatio.w}%`,
+                  height: `${viewportRatio.h}%`,
+                }}
+              />
+            </div>
+            <div className="dynamic-preview-panel__footer">
+              <span>Drag to move · Click to jump</span>
+            </div>
+          </div>
+        )}
       </div>
+
       <div className="preview__status">
         <span className={pageMetadata?.native_text_available ? "status-dot" : "status-dot status-dot--muted"} />
         {pageMetadata?.native_text_available ? "Native text available" : "No native text detected"}

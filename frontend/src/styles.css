@@ -246,7 +246,7 @@ button:focus-visible, a:focus-visible, [role="button"]:focus-visible {
 .evidence-banner__copy { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .evidence-banner__copy small { max-width: 580px; color: #738078; font: 600 8px/1.35 "SFMono-Regular", Consolas, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .evidence-hint { color: #7b857f; background: #edf0ec; border-color: #d2d7d2; }
-.preview__viewport { position: relative; min-height: 0; overflow: auto; padding: 24px; }
+.preview__viewport { position: relative; min-height: 0; overflow: auto; padding: 24px; touch-action: none; overscroll-behavior: contain; }
 .pdf-page { position: relative; margin: 0 auto; background: white; box-shadow: 0 4px 18px rgba(17, 25, 23, .24); }
 .pdf-page canvas { display: block; }
 .preview-state { position: absolute; z-index: 3; inset: 0; display: flex; align-items: center; justify-content: center; gap: 10px; color: #637069; background: rgba(223, 227, 223, .82); font-size: 11px; }
@@ -722,4 +722,140 @@ body { font-size: 16px; }
   .traceability-list, .graph-canvas, .graph-nodes, .final-review-info, .level-status-grid { grid-template-columns: 1fr; }
   .data-table, .validation-table, .visual-table, .relationship-findings-table table { table-layout: auto; }
   .validation-table-wrap, .visual-table-wrap, .relationship-findings-table { overflow-x: auto; }
+}
+
+/* --- Dynamic Preview Minimap & Easy Moving --- */
+.preview__viewport.can-pan {
+  cursor: grab;
+}
+.preview__viewport.is-panning {
+  cursor: grabbing !important;
+  user-select: none;
+}
+
+.dynamic-preview-panel {
+  position: absolute;
+  right: 18px;
+  bottom: 18px;
+  z-index: 10;
+  background: rgba(26, 34, 30, 0.94);
+  border: 1px solid #4a5a51;
+  border-radius: 6px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5), 0 2px 8px rgba(0, 0, 0, 0.3);
+  backdrop-filter: blur(8px);
+  user-select: none;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  animation: highlight-in 0.2s ease-out;
+}
+
+.dynamic-preview-panel__header {
+  padding: 6px 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  background: #17211b;
+  border-bottom: 1px solid #36463e;
+  font: 700 11px "SFMono-Regular", Consolas, monospace;
+  color: #cdd8d2;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.dynamic-preview-panel__title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.dynamic-preview-panel__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #72a216;
+  box-shadow: 0 0 6px #72a216;
+}
+
+.dynamic-preview-panel__scale {
+  color: #9ecc3b;
+  font-size: 11px;
+}
+
+.dynamic-preview-panel__close {
+  padding: 0 4px;
+  background: transparent;
+  border: 0;
+  color: #8fa097;
+  font-size: 12px;
+  cursor: pointer;
+}
+.dynamic-preview-panel__close:hover {
+  color: #fff;
+}
+
+.dynamic-preview-panel__canvas-wrap {
+  position: relative;
+  margin: 6px;
+  background: #ffffff;
+  border: 1px solid #485c52;
+  cursor: crosshair;
+  overflow: hidden;
+}
+
+.dynamic-preview-panel__canvas-wrap canvas {
+  display: block;
+}
+
+.dynamic-preview__viewfinder {
+  position: absolute;
+  border: 2px solid #72a216;
+  background: rgba(184, 237, 66, 0.28);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6), inset 0 0 6px rgba(114, 162, 22, 0.45);
+  pointer-events: none;
+  box-sizing: border-box;
+}
+
+.dynamic-preview__marker {
+  position: absolute;
+  border: 2px solid #ff4444;
+  background: rgba(255, 68, 68, 0.45);
+  box-shadow: 0 0 5px #ff4444;
+  pointer-events: none;
+  box-sizing: border-box;
+}
+
+.dynamic-preview-panel__footer {
+  padding: 4px 8px 6px;
+  text-align: center;
+  font: 600 10px "SFMono-Regular", Consolas, monospace;
+  color: #8c9c93;
+  letter-spacing: 0.02em;
+}
+
+.zoom-preset-btn,
+.minimap-toggle-btn {
+  padding: 0 10px !important;
+  height: 36px !important;
+  border: 1px solid #48544e !important;
+  color: #dde4df !important;
+  background: #2a342f !important;
+  font: 700 12px "SFMono-Regular", Consolas, monospace !important;
+  cursor: pointer;
+  letter-spacing: 0.03em;
+  border-radius: 3px;
+  white-space: nowrap;
+}
+
+.zoom-preset-btn:hover,
+.minimap-toggle-btn:hover {
+  border-color: #7f8d86 !important;
+  color: #fff !important;
+}
+
+.minimap-toggle-btn--active {
+  background: #33443a !important;
+  border-color: #5d7566 !important;
+  color: #b8ed42 !important;
 }

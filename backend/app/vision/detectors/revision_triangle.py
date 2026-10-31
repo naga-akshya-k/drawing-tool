@@ -1,4 +1,4 @@
-"""Rule-based revision-triangle detector."""
+"""Rule-based revision-triangle and table-triangle detector."""
 
 from __future__ import annotations
 
@@ -39,12 +39,42 @@ class RevisionTriangleDetector(VisualDetector):
                     continue
                 if area / max(pdf_width * pdf_height, 1) < 0.22 or area > page_area * 0.002:
                     continue
-                # Wrapper title blocks contain projection and logo geometry that should not
-                # be interpreted as drawing-area revision markers.
-                if pdf_box[0] > page.pdf_width * 0.68 and pdf_box[1] > page.pdf_height * 0.72:
-                    continue
-                text, _ = nearby_native_text(page, pdf_box, margin=10, pattern=r"[A-Z0-9]{1,3}")
-                confidence = min(0.97, 0.79 + (0.14 if text else 0.0))
+
+                # Classify location: Table / Metadata vs Drawing area
+                is_title_block = pdf_box[0] > page.pdf_width * 0.68 and pdf_box[1] > page.pdf_height * 0.82
+                is_rev_table = pdf_box[0] < page.pdf_width * 0.40 and pdf_box[1] > page.pdf_height * 0.85
+                is_notes_table = pdf_box[0] < page.pdf_width * 0.40 and pdf_box[1] < page.pdf_height * 0.35
+                is_bom_table = pdf_box[0] > page.pdf_width * 0.65 and pdf_box[1] < page.pdf_height * 0.30
+                is_table = is_title_block or is_rev_table or is_notes_table or is_bom_table
+
+                if not is_table:
+                    # In drawing views, geometric lines, fillets, and leader arrows must NOT
+                    # be detected. Only true revision triangles containing a revision letter/code
+                    # strictly inside the triangle boundary are accepted.
+                    text, _ = nearby_native_text(page, pdf_box, margin=1.5, pattern=r"^[A-Z0-9]{1,2}$")
+                    if not text:
+                        continue
+                    label = text
+                else:
+                    text, _ = nearby_native_text(page, pdf_box, margin=8.0, pattern=r"[A-Z0-9]{1,4}")
+                    if is_title_block or is_notes_table:
+                        near_words = [
+                            w.text.upper()
+                            for w in page.native_words
+                            if abs(w.bounding_box[0] - pdf_box[0]) < 80 and abs(w.bounding_box[1] - pdf_box[1]) < 35
+                        ]
+                        if any("CRITICAL" in nw or "SAFETY" in nw or "COMPONENT" in nw for nw in near_words):
+                            label = "CRITICAL"
+                        else:
+                            label = text or ("TABLE_TRIANGLE" if is_title_block else "NOTE_TRIANGLE")
+                    elif is_rev_table:
+                        label = text or "REV"
+                    elif is_bom_table:
+                        label = text or "BOM_TRIANGLE"
+                    else:
+                        label = text or "TABLE_TRIANGLE"
+
+                confidence = min(0.97, 0.88 + (0.08 if label else 0.0))
                 points = [
                     (float(point[0][0]) / page.x_scale, float(point[0][1]) / page.y_scale)
                     for point in polygon
@@ -56,10 +86,14 @@ class RevisionTriangleDetector(VisualDetector):
                     polygon=points,
                     confidence=confidence,
                     detector=self.name,
-                    raw_text=text,
-                    normalized_text=text.upper() if text else None,
-                    linked_text=text,
-                    attributes={"candidate_revision_identifier": text, "shape": "triangle"},
+                    raw_text=label,
+                    normalized_text=label.upper() if label else None,
+                    linked_text=label,
+                    attributes={
+                        "candidate_revision_identifier": label,
+                        "shape": "triangle",
+                        "location": "table" if is_table else "drawing",
+                    },
                 )
                 if not any(
                     intersection_over_union(candidate.bounding_box, existing.bounding_box) > 0.65
